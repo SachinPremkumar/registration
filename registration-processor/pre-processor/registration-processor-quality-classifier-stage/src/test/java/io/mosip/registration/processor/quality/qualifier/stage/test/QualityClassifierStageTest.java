@@ -5,6 +5,7 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -58,6 +59,8 @@ import io.mosip.registration.processor.core.util.RegistrationExceptionMapperUtil
 import io.mosip.registration.processor.packet.storage.utils.PacketManagerService;
 import io.mosip.registration.processor.packet.storage.utils.PriorityBasedPacketManagerService;
 import io.mosip.registration.processor.packet.storage.utils.Utilities;
+import io.mosip.registration.processor.quality.classifier.exception.FileMissingException;
+import io.mosip.registration.processor.quality.classifier.openbq.service.OpenBqClient;
 import io.mosip.registration.processor.quality.classifier.stage.QualityClassifierStage;
 import io.mosip.registration.processor.rest.client.audit.builder.AuditLogRequestBuilder;
 import io.mosip.registration.processor.status.dto.InternalRegistrationStatusDto;
@@ -104,6 +107,9 @@ public class QualityClassifierStageTest {
 
 	@Mock
 	private PacketManagerService packetManagerService;
+
+	@Mock
+	private OpenBqClient openBqClient;
 
 	private String qualityPrefixTag = "Biometric_Quality-";
 
@@ -220,6 +226,7 @@ public class QualityClassifierStageTest {
 
 		ReflectionTestUtils.setField(qualityClassifierStage, "parsedQualityRangeMap", parsedMap);
 		ReflectionTestUtils.setField(qualityClassifierStage, "modalities", Arrays.asList("Iris", "Finger", "Face"));
+		ReflectionTestUtils.setField(qualityClassifierStage, "openBqClient", openBqClient);
 
 		registrationStatusDto = new InternalRegistrationStatusDto();
 		registrationStatusDto.setRegistrationId("123456789");
@@ -603,6 +610,54 @@ public class QualityClassifierStageTest {
 		MessageDTO result = qualityClassifierStage.process(dto);
 		assertFalse(result.getIsValid());
 		assertTrue(result.getInternalError());
+	}
+
+	@Test
+	public void testOpenBqDispatchInvokedOnSuccess() throws Exception {
+		when(basedPacketManagerService.getBiometricsByMappingJsonKey(any(), any(), any(), any()))
+				.thenReturn(getMockBiometricRecord());
+		mockScores(90, 94, 98);
+
+		MessageDTO dto = new MessageDTO();
+		dto.setRid("1234567890");
+		dto.setReg_type("NEW");
+		MessageDTO result = qualityClassifierStage.process(dto);
+
+		assertTrue(result.getIsValid());
+		verify(openBqClient, atLeastOnce()).dispatchRegistrationIdAsync(org.mockito.ArgumentMatchers.eq("1234567890"), org.mockito.ArgumentMatchers.eq("realtime"));
+	}
+
+	@Test
+	public void testOpenBqExceptionDoesNotImpactStageSuccess() throws Exception {
+		when(basedPacketManagerService.getBiometricsByMappingJsonKey(any(), any(), any(), any()))
+				.thenReturn(getMockBiometricRecord());
+		mockScores(90, 94, 98);
+		Mockito.doThrow(new RuntimeException("OpenBQ Dispatch Error")).when(openBqClient)
+				.dispatchRegistrationIdAsync(any(), any());
+
+		MessageDTO dto = new MessageDTO();
+		dto.setRid("1234567890");
+		dto.setReg_type("NEW");
+		MessageDTO result = qualityClassifierStage.process(dto);
+
+		assertTrue(result.getIsValid());
+		assertFalse(result.getInternalError());
+	}
+
+	@Test
+	public void testOpenBqDispatchedEvenOnBioFailure() throws Exception {
+		when(basedPacketManagerService.getBiometricsByMappingJsonKey(anyString(), any(), any(), any()))
+				.thenReturn(null);
+		when(registrationStatusMapperUtil.getStatusCode(RegistrationExceptionTypeCode.BIOMETRIC_EXCEPTION))
+				.thenReturn("REPROCESS");
+
+		MessageDTO dto = new MessageDTO();
+		dto.setRid("1234567890");
+		dto.setReg_type("NEW");
+		MessageDTO result = qualityClassifierStage.process(dto);
+
+		assertTrue(result.getInternalError());
+		verify(openBqClient, atLeastOnce()).dispatchRegistrationIdAsync(org.mockito.ArgumentMatchers.eq("1234567890"), org.mockito.ArgumentMatchers.eq("realtime"));
 	}
 
 }

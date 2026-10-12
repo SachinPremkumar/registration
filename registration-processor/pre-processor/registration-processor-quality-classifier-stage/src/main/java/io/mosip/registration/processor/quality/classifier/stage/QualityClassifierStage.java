@@ -54,6 +54,7 @@ import io.mosip.registration.processor.core.util.RegistrationExceptionMapperUtil
 import io.mosip.registration.processor.packet.storage.utils.PacketManagerService;
 import io.mosip.registration.processor.packet.storage.utils.PriorityBasedPacketManagerService;
 import io.mosip.registration.processor.quality.classifier.exception.FileMissingException;
+import io.mosip.registration.processor.quality.classifier.openbq.service.OpenBqClient;
 import io.mosip.registration.processor.rest.client.audit.builder.AuditLogRequestBuilder;
 import io.mosip.registration.processor.status.code.RegistrationStatusCode;
 import io.mosip.registration.processor.status.dto.InternalRegistrationStatusDto;
@@ -69,7 +70,7 @@ import io.mosip.registration.processor.status.service.RegistrationStatusService;
 @Configuration
 @ComponentScan(basePackages = { "${mosip.auth.adapter.impl.basepackage}",
 		"io.mosip.registration.processor.core.config",
-		"io.mosip.registration.processor.quality.classifier.config", "io.mosip.registration.processor.stages.config",
+		"io.mosip.registration.processor.quality.classifier", "io.mosip.registration.processor.stages.config",
 		"io.mosip.registrationprocessor.stages.config", "io.mosip.registration.processor.status.config",
 		"io.mosip.registration.processor.rest.client.config", "io.mosip.registration.processor.packet.storage.config",
 		"io.mosip.registration.processor.packet.manager.config", "io.mosip.kernel.idobjectvalidator.config",
@@ -144,9 +145,12 @@ public class QualityClassifierStage extends MosipVerticleAPIManager {
 	@Value("${mosip.regproc.quality.classifier.tagging.quality.prefix:Biometric_Quality-}")
 	private String qualityTagPrefix;
 
-    /** The tag value that will be used by default when the packet does not have value for the biometric tag field */
-    @Value("${mosip.regproc.quality.classifier.tagging.quality.biometric-not-available-tag-value}")
-    private String biometricNotAvailableTagValue;
+	/**
+	 * The tag value that will be used by default when the packet does not have
+	 * value for the biometric tag field
+	 */
+	@Value("${mosip.regproc.quality.classifier.tagging.quality.biometric-not-available-tag-value}")
+	private String biometricNotAvailableTagValue;
 
     /** modality arrays that needs to be tagged */
     @Value("#{'${mosip.regproc.quality.classifier.tagging.quality.modalities}'.split(',')}")
@@ -172,6 +176,9 @@ public class QualityClassifierStage extends MosipVerticleAPIManager {
 
 	@Autowired
 	private BioAPIFactory bioApiFactory;
+
+	@Autowired(required = false)
+	private OpenBqClient openBqClient;
 
 	@PostConstruct
 	private void generateParsedQualityRangeMap() {
@@ -394,6 +401,15 @@ public class QualityClassifierStage extends MosipVerticleAPIManager {
 			auditLogRequestBuilder.createAuditRequestBuilder(description.getMessage(), eventId, eventName, eventType,
 					moduleId, moduleName, regId);
 
+			if (openBqClient != null) {
+				try {
+					openBqClient.dispatchRegistrationIdAsync(regId, "realtime");
+				} catch (Exception e) {
+					regProcLogger.warn(LoggerFileConstant.SESSIONID.toString(),
+							LoggerFileConstant.REGISTRATIONID.toString(), regId,
+							"Exception during OpenBQ dispatch invocation: " + e.getMessage());
+				}
+			}
 		}
 
 		return object;
